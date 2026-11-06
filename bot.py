@@ -7,7 +7,7 @@ import asyncio
 import logging
 import os
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -42,8 +42,8 @@ DEPARTMENTS = [
     ("🌱 ለልማት ክፍል",          "ልማት ክፍል"),
     ("❤️ ለአባላት እንክብካቤ ክፍል",  "አባላት እንክብካቤ ክፍል"),
     ("🗣️ ቋንቋ ክፍል",           "ቋንቋ ክፍል"),
-    ("🏛️ ለዋናው ጽ/ቤት",         "ዋናው ጽ/ቤት"),
     ("📖 ትምህርታዊ ስነ-ጽሑፍ",     "ትምህርታዊ ስነ-ጽሑፍ"),
+    ("🏛️ ለዋናው ጽ/ቤት",         "ዋናው ጽ/ቤት"),
 ]
 
 # ── Text constants ────────────────────────────────────────────────────────────
@@ -82,6 +82,15 @@ def build_department_keyboard() -> InlineKeyboardMarkup:
     ]
     keyboard = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
     return InlineKeyboardMarkup(keyboard)
+
+
+def build_start_keyboard() -> ReplyKeyboardMarkup:
+    """Persistent keyboard with a single Start button."""
+    return ReplyKeyboardMarkup(
+        [["🕊️ ጀምር / Start"]],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )
 
 
 def user_display(user) -> str:
@@ -146,7 +155,7 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return ConversationHandler.END
 
-    await update.message.reply_text(THANKS_TEXT)
+    await update.message.reply_text(THANKS_TEXT, reply_markup=build_start_keyboard())
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -163,13 +172,17 @@ async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    await update.message.reply_text(CANCEL_TEXT)
+    await update.message.reply_text(
+        CANCEL_TEXT,
+        reply_markup=build_start_keyboard(),
+    )
     return ConversationHandler.END
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "❓ ያልታወቀ ትዕዛዝ። ለመጀመር /start ይጫኑ።"
+        "❓ ያልታወቀ ትዕዛዝ። ለመጀመር /start ይጫኑ።",
+        reply_markup=build_start_keyboard(),
     )
 
 
@@ -177,7 +190,8 @@ async def unexpected_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Catch any text sent outside the conversation flow."""
     await update.message.reply_text(
         "⚠️ እባክዎ መጀመሪያ ክፍል ይምረጡ።\n"
-        "ለመጀመር 👉 /start ይጫኑ።"
+        "ለመጀመር � ከታች ያለውን Start ይጫኑ።",
+        reply_markup=build_start_keyboard(),
     )
 
 
@@ -190,7 +204,10 @@ async def run_bot() -> None:
     application = Application.builder().token(BOT_TOKEN).build()
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            MessageHandler(filters.Regex(r"^🕊️ ጀምር / Start$"), start),
+        ],
         states={
             SELECT_DEPARTMENT: [
                 CallbackQueryHandler(select_department, pattern=r"^dept:"),
