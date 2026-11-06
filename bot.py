@@ -173,6 +173,14 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
+async def unexpected_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Catch any text sent outside the conversation flow."""
+    await update.message.reply_text(
+        "⚠️ እባክዎ መጀመሪያ ክፍል ይምረጡ።\n"
+        "ለመጀመር 👉 /start ይጫኑ።"
+    )
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def run_bot() -> None:
@@ -199,6 +207,7 @@ async def run_bot() -> None:
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("chatid", chatid))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unexpected_message))
 
     logger.info("✅ Bot is running...")
 
