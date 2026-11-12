@@ -155,6 +155,15 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         f"💬 *አስተያየት:*\n{message_text}"
     )
 
+    # Message for department head — no sender info, only department and comment
+    head_msg = (
+        f"📨 *አዲስ አስተያየት*\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📂 *ክፍል:* {department}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"💬 *አስተያየት:*\n{message_text}"
+    )
+
     try:
         # Always forward to the main admin group
         await context.bot.send_message(
@@ -171,7 +180,7 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             try:
                 await context.bot.send_message(
                     chat_id=head_id,
-                    text=forward_msg,
+                    text=head_msg,
                     parse_mode="Markdown",
                 )
                 logger.info(f"Feedback also forwarded to department head {head_id}.")
