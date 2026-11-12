@@ -46,6 +46,20 @@ DEPARTMENTS = [
     ("🏛️ ለዋናው ጽ/ቤት",         "ዋናው ጽ/ቤት"),
 ]
 
+# ── Department head routing ───────────────────────────────────────────────────
+# Map each department name to the department head's Telegram user ID.
+# Add more as you get the IDs. Set to None to skip direct forwarding.
+DEPARTMENT_HEADS = {
+    "ትምህርት ክፍል":        None,
+    "መዝሙር ክፍል":         None,
+    "ሙያ ክፍል":           None,
+    "ባች ማስተባበሪያ ክፍል":  None,
+    "ልማት ክፍል":          None,
+    "አባላት እንክብካቤ ክፍል": None,
+    "ቋንቋ ክፍል":          None,
+    "ትምህርታዊ ስነ-ጽሑፍ":   5887687211,
+    "ዋናው ጽ/ቤት":         None,
+}
 # ── Text constants ────────────────────────────────────────────────────────────
 WELCOME_TEXT = (
     "🕊️ እንኳን ወደ ደ/ማ/ዩ/ግ/ጉባኤ በደህና መጣችሁ!\n\n"
@@ -142,12 +156,24 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
     try:
+        # Always forward to the main admin group
         await context.bot.send_message(
             chat_id=int(GROUP_CHAT_ID),
             text=forward_msg,
             parse_mode="Markdown",
         )
-        logger.info(f"Feedback from {user.id} ({department}) forwarded.")
+        logger.info(f"Feedback from {user.id} ({department}) forwarded to group.")
+
+        # Also forward to the department head if their ID is set
+        head_id = DEPARTMENT_HEADS.get(department)
+        if head_id:
+            await context.bot.send_message(
+                chat_id=head_id,
+                text=forward_msg,
+                parse_mode="Markdown",
+            )
+            logger.info(f"Feedback also forwarded to department head {head_id}.")
+
     except Exception as e:
         logger.error(f"Failed to forward feedback: {e}")
         await update.message.reply_text(
