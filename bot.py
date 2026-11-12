@@ -166,13 +166,17 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         # Also forward to the department head if their ID is set
         head_id = DEPARTMENT_HEADS.get(department)
+        logger.info(f"Department: '{department}' | Head ID: {head_id}")
         if head_id:
-            await context.bot.send_message(
-                chat_id=head_id,
-                text=forward_msg,
-                parse_mode="Markdown",
-            )
-            logger.info(f"Feedback also forwarded to department head {head_id}.")
+            try:
+                await context.bot.send_message(
+                    chat_id=head_id,
+                    text=forward_msg,
+                    parse_mode="Markdown",
+                )
+                logger.info(f"Feedback also forwarded to department head {head_id}.")
+            except Exception as head_err:
+                logger.error(f"Failed to forward to department head {head_id}: {head_err}")
 
     except Exception as e:
         logger.error(f"Failed to forward feedback: {e}")
