@@ -50,14 +50,14 @@ DEPARTMENTS = [
 # Map each department name to the department head's Telegram user ID.
 # Add more as you get the IDs. Set to None to skip direct forwarding.
 DEPARTMENT_HEADS = {
-    "ትምህርት ክፍል":        None,
+    "ትምህርት ክፍል":        9223739160,
     "መዝሙር ክፍል":         None,
     "ሙያ ክፍል":           None,
     "ባች ማስተባበሪያ ክፍል":  None,
     "ልማት ክፍል":          None,
     "አባላት እንክብካቤ ክፍል": None,
     "ቋንቋ ክፍል":          None,
-    "ትምህርታዊ ስነ-ጽሑፍ":   5887687211,
+    "ትምህርታዊ ስነ-ጽሑፍ":   None,
     "ዋናው ጽ/ቤት":         None,
 }
 # ── Text constants ────────────────────────────────────────────────────────────
