@@ -648,7 +648,7 @@ async def admin_menu_handler_report(query, data: dict) -> None:
 
 
 async def send_report(message, data: dict) -> None:
-    """Build and send the formatted report."""
+    """Build and send a clean simple report."""
     comments = data.get("comments", {})
     if not comments:
         await message.reply_text("📊 ገና አስተያየት አልደረሰም።")
@@ -659,55 +659,36 @@ async def send_report(message, data: dict) -> None:
     for cid, c in comments.items():
         d = c["department"]
         if d not in dept_stats:
-            dept_stats[d] = {"total": 0, "answered": 0, "unanswered": []}
+            dept_stats[d] = {"total": 0, "answered": 0}
         dept_stats[d]["total"] += 1
         if c["answered"]:
             dept_stats[d]["answered"] += 1
-        else:
-            dept_stats[d]["unanswered"].append((cid, c["text"][:40]))
 
     total_all    = sum(v["total"]    for v in dept_stats.values())
     answered_all = sum(v["answered"] for v in dept_stats.values())
     pending_all  = total_all - answered_all
 
-    # Column widths
-    col1 = 22   # department name
-    col2 = 7    # total
-    col3 = 7    # answered
-    col4 = 7    # unanswered
+    lines = ["📋 *የአስተያየት ሪፖርት*", ""]
 
-    header  = f"{'ክፍል':<{col1}} {'ጠቅላላ':>{col2}} {'✅':>{col3}} {'⏳':>{col4}}"
-    divider = "─" * (col1 + col2 + col3 + col4 + 3)
-
-    rows = [header, divider]
     for dept, s in dept_stats.items():
-        name = dept[:col1]
-        rows.append(
-            f"{name:<{col1}} {s['total']:>{col2}} {s['answered']:>{col3}} {len(s['unanswered']):>{col4}}"
-        )
+        pending = s["total"] - s["answered"]
+        if pending == 0:
+            status = "✅ ሁሉም ተመልሷል"
+        else:
+            status = f"⏳ {pending} ያልተመለሰ አለ"
 
-    rows.append(divider)
-    rows.append(
-        f"{'ጠቅላላ':<{col1}} {total_all:>{col2}} {answered_all:>{col3}} {pending_all:>{col4}}"
-    )
+        lines.append(f"📂 *{dept}*")
+        lines.append(f"    ጠቅላላ አስተያየት ➜ {s['total']}")
+        lines.append(f"    ምላሽ የተሰጠ   ➜ {s['answered']}")
+        lines.append(f"    ሁኔታ         ➜ {status}")
+        lines.append("")
 
-    table = "```\n" + "\n".join(rows) + "\n```"
+    lines.append("━━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"🔢 ጠቅላላ አስተያየት : {total_all}")
+    lines.append(f"✅ ምላሽ የተሰጠ    : {answered_all}")
+    lines.append(f"⏳ ምላሽ ያልተሰጠ   : {pending_all}")
 
-    # Unanswered previews
-    unanswered_lines = []
-    for dept, s in dept_stats.items():
-        if s["unanswered"]:
-            unanswered_lines.append(f"\n*{dept}* — ያልተመለሱ:")
-            for cid, preview in s["unanswered"][:3]:
-                unanswered_lines.append(f"  • `#{cid}`: {preview}…")
-            if len(s["unanswered"]) > 3:
-                unanswered_lines.append(f"  _...እና {len(s['unanswered']) - 3} ተጨማሪ_")
-
-    full_text = f"� *ሪፖርት*\n{table}"
-    if unanswered_lines:
-        full_text += "\n\n⏳ *ያልተመለሱ አስተያየቶች:*\n" + "\n".join(unanswered_lines)
-
-    await message.reply_text(full_text, parse_mode="Markdown")
+    await message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
