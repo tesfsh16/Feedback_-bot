@@ -1,13 +1,24 @@
 """
 ደ/ማ/ዩ/ግ/ጉባኤ Feedback Bot
-Collects feedback from users and forwards it to the admin group.
+- Users submit feedback per department
+- Admin can manage departments, heads, and view stats
+- Department heads can reply to comments
+- Replies are delivered back to the original commenter
 """
 
 import asyncio
+import json
 import logging
 import os
+import uuid
+from datetime import datetime
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -20,8 +31,9 @@ from telegram.ext import (
 
 # ── Load environment variables ────────────────────────────────────────────────
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN   = os.getenv("BOT_TOKEN")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
+ADMIN_ID    = int(os.getenv("ADMIN_ID", "5887687211"))
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -30,76 +42,98 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ── Data file ─────────────────────────────────────────────────────────────────
+DATA_FILE = "data.json"
+
 # ── Conversation states ───────────────────────────────────────────────────────
+# User flow
 SELECT_DEPARTMENT, WRITE_FEEDBACK = range(2)
-
-# ── Departments ───────────────────────────────────────────────────────────────
-DEPARTMENTS = [
-    ("📚 ለትምህርት ክፍል",          "ትምህርት ክፍል"),
-    ("🎵 ለመዝሙር ክፍል",          "መዝሙር ክፍል"),
-    ("💼 ለሙያ ክፍል",            "ሙያ ክፍል"),
-    ("🤝 ለባች ማስተባበሪያ ክፍል",   "ባች ማስተባበሪያ ክፍል"),
-    ("🌱 ለልማት ክፍል",          "ልማት ክፍል"),
-    ("❤️ ለአባላት እንክብካቤ ክፍል",  "አባላት እንክብካቤ ክፍል"),
-    ("🗣️ ቋንቋ ክፍል",           "ቋንቋ ክፍል"),
-    ("📖 ትምህርታዊ ስነ-ጽሑፍ",     "ትምህርታዊ ስነ-ጽሑፍ"),
-    ("🏛️ ለዋናው ጽ/ቤት",         "ዋናው ጽ/ቤት"),
-]
-
-# ── Department head routing ───────────────────────────────────────────────────
-# Map each department name to the department head's Telegram user ID.
-# Add more as you get the IDs. Set to None to skip direct forwarding.
-DEPARTMENT_HEADS = {
-    "ትምህርት ክፍል":        9223739160,
-    "መዝሙር ክፍል":         None,
-    "ሙያ ክፍል":           None,
-    "ባች ማስተባበሪያ ክፍል":  None,
-    "ልማት ክፍል":          None,
-    "አባላት እንክብካቤ ክፍል": None,
-    "ቋንቋ ክፍል":          None,
-    "ትምህርታዊ ስነ-ጽሑፍ":   None,
-    "ዋናው ጽ/ቤት":         5586249161,
-}
-# ── Text constants ────────────────────────────────────────────────────────────
-WELCOME_TEXT = (
-    "🕊️ እንኳን ወደ ደ/ማ/ዩ/ግ/ጉባኤ በደህና መጣችሁ!\n\n"
-    "ለስራችን ግብዓት ይሆነን ዘንድ ማንኛውንም ሃሳብ፣ አስተያየት እንዲሁም "
-    "ጥያቄ ማቅረብ ትችላላችሁ።\n\n"
-    "👇 እባክዎ አስተያየትዎን ለየትኛው ክፍል እንደሆነ ይምረጡ፦"
-)
-
-WRITE_TEXT = (
-    "✍️ ሃሳብዎን፣ አስተያየትዎን ወይም ጥያቄዎን ይጻፉ።\n\n"
-    "_(ወደ ክፍል ምርጫ ለመመለስ /start ይጫኑ)_"
-)
-
-CANCEL_TEXT = "❌ ተሰርዟል። እንደገና ለመጀመር /start ይጫኑ።"
-
-THANKS_TEXT = (
-    "✅ አስተያየትዎ ደርሷል! እናመሰግናለን 🙏\n\n"
-    "ሌላ አስተያየት ለማስገባት 👉 /start ይጫኑ።"
-)
-
-NO_GROUP_TEXT = (
-    "⚠️ Admin: GROUP_CHAT_ID is not set.\n"
-    "Add the bot to your group, send /chatid, "
-    "then set GROUP_CHAT_ID in your environment variables."
-)
+# Admin flow
+ADMIN_MENU, ADMIN_ADD_DEPT, ADMIN_DELETE_DEPT, ADMIN_SET_HEAD_DEPT, ADMIN_SET_HEAD_ID = range(10, 15)
+# Head reply flow
+HEAD_REPLY_TEXT = 20
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# DATA LAYER
+# ══════════════════════════════════════════════════════════════════════════════
 
-def build_department_keyboard() -> InlineKeyboardMarkup:
+def load_data() -> dict:
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    # Default data structure
+    return {
+        "departments": [
+            {"name": "ትምህርት ክፍል",        "emoji": "📚", "head_id": 9223739160},
+            {"name": "መዝሙር ክፍል",         "emoji": "🎵", "head_id": None},
+            {"name": "ሙያ ክፍል",           "emoji": "💼", "head_id": None},
+            {"name": "ባች ማስተባበሪያ ክፍል",  "emoji": "🤝", "head_id": None},
+            {"name": "ልማት ክፍል",          "emoji": "🌱", "head_id": None},
+            {"name": "አባላት እንክብካቤ ክፍል", "emoji": "❤️", "head_id": None},
+            {"name": "ቋንቋ ክፍል",          "emoji": "🗣️", "head_id": None},
+            {"name": "ትምህርታዊ ስነ-ጽሑፍ",   "emoji": "📖", "head_id": None},
+            {"name": "ነገረ ሃይማኖት",        "emoji": "✝️", "head_id": None},
+            {"name": "ዋናው ጽ/ቤት",         "emoji": "🏛️", "head_id": 5586249161},
+        ],
+        "comments": {}
+    }
+
+
+def save_data(data: dict) -> None:
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def get_departments(data: dict) -> list:
+    return data.get("departments", [])
+
+
+def get_department_by_name(data: dict, name: str) -> dict | None:
+    for d in data["departments"]:
+        if d["name"] == name:
+            return d
+    return None
+
+
+def save_comment(data: dict, comment_id: str, user_id: int, user_name: str,
+                 department: str, text: str) -> None:
+    data["comments"][comment_id] = {
+        "user_id":    user_id,
+        "user_name":  user_name,
+        "department": department,
+        "text":       text,
+        "timestamp":  datetime.now().isoformat(),
+        "answered":   False,
+        "reply":      None,
+    }
+    save_data(data)
+
+
+def mark_answered(data: dict, comment_id: str, reply_text: str) -> None:
+    if comment_id in data["comments"]:
+        data["comments"][comment_id]["answered"] = True
+        data["comments"][comment_id]["reply"] = reply_text
+        save_data(data)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# KEYBOARDS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def build_department_keyboard(data: dict) -> InlineKeyboardMarkup:
     buttons = [
-        InlineKeyboardButton(label, callback_data=f"dept:{value}")
-        for label, value in DEPARTMENTS
+        InlineKeyboardButton(
+            f"{d['emoji']} ለ{d['name']}",
+            callback_data=f"dept:{d['name']}"
+        )
+        for d in get_departments(data)
     ]
     keyboard = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
     return InlineKeyboardMarkup(keyboard)
 
 
 def build_start_keyboard() -> ReplyKeyboardMarkup:
-    """Persistent keyboard with a single Start button."""
     return ReplyKeyboardMarkup(
         [["🕊️ ጀምር / Start"]],
         resize_keyboard=True,
@@ -107,19 +141,49 @@ def build_start_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def build_admin_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ ክፍል ጨምር",        callback_data="admin:add_dept")],
+        [InlineKeyboardButton("🗑️ ክፍል ሰርዝ",        callback_data="admin:del_dept")],
+        [InlineKeyboardButton("👤 የክፍል ሃላፊ ተወሰን",  callback_data="admin:set_head")],
+        [InlineKeyboardButton("📊 ስታቲስቲክስ",         callback_data="admin:stats")],
+        [InlineKeyboardButton("❌ ዝጋ",              callback_data="admin:close")],
+    ])
+
+
+def build_reply_keyboard(comment_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("↩️ ምላሽ ስጥ", callback_data=f"reply:{comment_id}")
+    ]])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+
 def user_display(user) -> str:
     name = user.full_name or "ስም የለም"
     username = f" (@{user.username})" if user.username else ""
     return f"{name}{username}"
 
 
-# ── Handlers ──────────────────────────────────────────────────────────────────
+def is_admin(user_id: int) -> bool:
+    return user_id == ADMIN_ID
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# USER FLOW
+# ══════════════════════════════════════════════════════════════════════════════
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
+    data = load_data()
     await update.message.reply_text(
-        WELCOME_TEXT,
-        reply_markup=build_department_keyboard(),
+        "🕊️ እንኳን ወደ ደ/ማ/ዩ/ግ/ጉባኤ በደህና መጣችሁ!\n\n"
+        "ለስራችን ግብዓት ይሆነን ዘንድ ማንኛውንም ሃሳብ፣ አስተያየት እንዲሁም "
+        "ጥያቄ ማቅረብ ትችላላችሁ።\n\n"
+        "👇 እባክዎ አስተያየትዎን ለየትኛው ክፍል እንደሆነ ይምረጡ፦",
+        reply_markup=build_department_keyboard(data),
     )
     return SELECT_DEPARTMENT
 
@@ -130,74 +194,348 @@ async def select_department(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     department = query.data.replace("dept:", "")
     context.user_data["department"] = department
     await query.edit_message_text(
-        f"✅ መረጡ: *{department}*\n\n{WRITE_TEXT}",
+        f"✅ መረጡ: *{department}*\n\n"
+        "✍️ ሃሳብዎን፣ አስተያየትዎን ወይም ጥያቄዎን ይጻፉ።\n\n"
+        "_(ወደ ክፍል ምርጫ ለመመለስ /start ይጫኑ)_",
         parse_mode="Markdown",
     )
     return WRITE_FEEDBACK
 
 
 async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user = update.effective_user
+    user       = update.effective_user
     department = context.user_data.get("department", "ያልተገለጸ ክፍል")
-    message_text = update.message.text or "(ጽሑፍ አልተላከም)"
+    text       = update.message.text or "(ጽሑፍ አልተላከም)"
+    data       = load_data()
 
-    if not GROUP_CHAT_ID:
-        await update.message.reply_text(NO_GROUP_TEXT)
-        return ConversationHandler.END
+    # Generate unique comment ID
+    comment_id = str(uuid.uuid4())[:8]
+    save_comment(data, comment_id, user.id, user_display(user), department, text)
 
-    forward_msg = (
-        f"📨 *አዲስ አስተያየት*\n"
+    # Message for admin group (full info)
+    group_msg = (
+        f"📨 *አዲስ አስተያየት* `#{comment_id}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"👤 *ከ:* {user_display(user)}\n"
         f"🆔 *User ID:* `{user.id}`\n"
         f"📂 *ክፍል:* {department}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💬 *አስተያየት:*\n{message_text}"
+        f"💬 *አስተያየት:*\n{text}"
     )
 
-    # Message for department head — no sender info, only department and comment
+    # Message for department head (no sender info)
     head_msg = (
-        f"📨 *አዲስ አስተያየት*\n"
+        f"📨 *አዲስ አስተያየት* `#{comment_id}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
         f"📂 *ክፍል:* {department}\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💬 *አስተያየት:*\n{message_text}"
+        f"💬 *አስተያየት:*\n{text}"
     )
 
-    try:
-        # Always forward to the main admin group
-        await context.bot.send_message(
-            chat_id=int(GROUP_CHAT_ID),
-            text=forward_msg,
-            parse_mode="Markdown",
-        )
-        logger.info(f"Feedback from {user.id} ({department}) forwarded to group.")
+    # Send to admin group
+    if GROUP_CHAT_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=int(GROUP_CHAT_ID),
+                text=group_msg,
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            logger.error(f"Failed to send to group: {e}")
 
-        # Also forward to the department head if their ID is set
-        head_id = DEPARTMENT_HEADS.get(department)
-        logger.info(f"Department: '{department}' | Head ID: {head_id}")
-        if head_id:
-            try:
-                await context.bot.send_message(
-                    chat_id=head_id,
-                    text=head_msg,
-                    parse_mode="Markdown",
-                )
-                logger.info(f"Feedback also forwarded to department head {head_id}.")
-            except Exception as head_err:
-                logger.error(f"Failed to forward to department head {head_id}: {head_err}")
+    # Send to department head with reply button
+    dept_obj = get_department_by_name(data, department)
+    if dept_obj and dept_obj.get("head_id"):
+        try:
+            await context.bot.send_message(
+                chat_id=dept_obj["head_id"],
+                text=head_msg,
+                parse_mode="Markdown",
+                reply_markup=build_reply_keyboard(comment_id),
+            )
+            logger.info(f"Forwarded #{comment_id} to head {dept_obj['head_id']}")
+        except Exception as e:
+            logger.error(f"Failed to send to head: {e}")
 
-    except Exception as e:
-        logger.error(f"Failed to forward feedback: {e}")
-        await update.message.reply_text(
-            "⚠️ አስተያየትዎ መላክ አልተቻለም። እባክዎ ቆይተው እንደገና ይሞክሩ።"
-        )
-        return ConversationHandler.END
-
-    await update.message.reply_text(THANKS_TEXT, reply_markup=build_start_keyboard())
+    await update.message.reply_text(
+        "✅ አስተያየትዎ ደርሷል! እናመሰግናለን 🙏\n\n"
+        "ሌላ አስተያየት ለማስገባት 👉 /start ይጫኑ።",
+        reply_markup=build_start_keyboard(),
+    )
     context.user_data.clear()
     return ConversationHandler.END
 
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
+    await update.message.reply_text(
+        "❌ ተሰርዟል። እንደገና ለመጀመር /start ይጫኑ።",
+        reply_markup=build_start_keyboard(),
+    )
+    return ConversationHandler.END
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DEPARTMENT HEAD REPLY FLOW
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def reply_button_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Department head taps the ↩️ ምላሽ ስጥ button."""
+    query = update.callback_query
+    await query.answer()
+    comment_id = query.data.replace("reply:", "")
+    context.user_data["replying_to"] = comment_id
+
+    await query.message.reply_text(
+        f"✍️ ለ `#{comment_id}` ምላሽዎን ይጻፉ፦",
+        parse_mode="Markdown",
+    )
+    return HEAD_REPLY_TEXT
+
+
+async def receive_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receive the reply text and deliver it to the original commenter."""
+    reply_text = update.message.text
+    comment_id = context.user_data.get("replying_to")
+    data       = load_data()
+
+    if not comment_id or comment_id not in data["comments"]:
+        await update.message.reply_text("⚠️ አስተያየቱ አልተገኘም።")
+        return ConversationHandler.END
+
+    comment    = data["comments"][comment_id]
+    department = comment["department"]
+    commenter_id = comment["user_id"]
+
+    # Mark as answered
+    mark_answered(data, comment_id, reply_text)
+
+    # Deliver reply to the original commenter
+    reply_msg = (
+        f"📩 *ከ{department} የተላከ ምላሽ*\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"💬 {reply_text}"
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=commenter_id,
+            text=reply_msg,
+            parse_mode="Markdown",
+        )
+        await update.message.reply_text("✅ ምላሹ ለተጠቃሚው ተልኳል!")
+        logger.info(f"Reply to #{comment_id} delivered to user {commenter_id}")
+    except Exception as e:
+        logger.error(f"Failed to deliver reply: {e}")
+        await update.message.reply_text("⚠️ ምላሹ ለተጠቃሚው መላክ አልተቻለም።")
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ADMIN FLOW
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ እርስዎ አስተዳዳሪ አይደሉም።")
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "🔧 *የአስተዳዳሪ ፓናል*\nምን ማድረግ ይፈልጋሉ?",
+        parse_mode="Markdown",
+        reply_markup=build_admin_keyboard(),
+    )
+    return ADMIN_MENU
+
+
+async def admin_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    action = query.data.replace("admin:", "")
+    data   = load_data()
+
+    if action == "close":
+        await query.edit_message_text("✅ ተዘግቷል።")
+        return ConversationHandler.END
+
+    elif action == "stats":
+        comments = data.get("comments", {})
+        dept_stats = {}
+        for c in comments.values():
+            d = c["department"]
+            if d not in dept_stats:
+                dept_stats[d] = {"total": 0, "answered": 0}
+            dept_stats[d]["total"] += 1
+            if c["answered"]:
+                dept_stats[d]["answered"] += 1
+
+        if not dept_stats:
+            await query.edit_message_text(
+                "📊 *ስታቲስቲክስ*\n\nገና አስተያየት አልደረሰም።",
+                parse_mode="Markdown",
+                reply_markup=build_admin_keyboard(),
+            )
+            return ADMIN_MENU
+
+        total_all    = sum(v["total"]    for v in dept_stats.values())
+        answered_all = sum(v["answered"] for v in dept_stats.values())
+
+        lines = ["📊 *ስታቲስቲክስ በክፍል*\n━━━━━━━━━━━━━━━━━━━"]
+        for dept, s in dept_stats.items():
+            unanswered = s["total"] - s["answered"]
+            lines.append(
+                f"📂 *{dept}*\n"
+                f"   ጠቅላላ: {s['total']} | ✅ {s['answered']} | ⏳ {unanswered}"
+            )
+        lines.append(f"━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"🔢 ጠቅላላ: {total_all} | ✅ {answered_all} | ⏳ {total_all - answered_all}")
+
+        await query.edit_message_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_markup=build_admin_keyboard(),
+        )
+        return ADMIN_MENU
+
+    elif action == "add_dept":
+        await query.edit_message_text(
+            "➕ *አዲስ ክፍል ጨምር*\n\nየክፍሉን ስም ይጻፉ፦\n_(ለመሰረዝ /cancel)_",
+            parse_mode="Markdown",
+        )
+        return ADMIN_ADD_DEPT
+
+    elif action == "del_dept":
+        depts = get_departments(data)
+        if not depts:
+            await query.edit_message_text("⚠️ ምንም ክፍል የለም።", reply_markup=build_admin_keyboard())
+            return ADMIN_MENU
+        buttons = [
+            [InlineKeyboardButton(f"{d['emoji']} {d['name']}", callback_data=f"delconfirm:{d['name']}")]
+            for d in depts
+        ]
+        buttons.append([InlineKeyboardButton("🔙 ተመለስ", callback_data="admin:back")])
+        await query.edit_message_text(
+            "🗑️ *የትኛውን ክፍል መሰረዝ ይፈልጋሉ?*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return ADMIN_DELETE_DEPT
+
+    elif action == "set_head":
+        depts = get_departments(data)
+        buttons = [
+            [InlineKeyboardButton(f"{d['emoji']} {d['name']}", callback_data=f"setheaddept:{d['name']}")]
+            for d in depts
+        ]
+        buttons.append([InlineKeyboardButton("🔙 ተመለስ", callback_data="admin:back")])
+        await query.edit_message_text(
+            "👤 *ሃላፊ ለየትኛው ክፍል ይሾሙ?*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return ADMIN_SET_HEAD_DEPT
+
+    elif action == "back":
+        await query.edit_message_text(
+            "🔧 *የአስተዳዳሪ ፓናል*\nምን ማድረግ ይፈልጋሉ?",
+            parse_mode="Markdown",
+            reply_markup=build_admin_keyboard(),
+        )
+        return ADMIN_MENU
+
+    return ADMIN_MENU
+
+
+async def admin_add_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    name = update.message.text.strip()
+    data = load_data()
+    if get_department_by_name(data, name):
+        await update.message.reply_text(f"⚠️ '{name}' ቀድሞ አለ። ሌላ ስም ይጻፉ፦")
+        return ADMIN_ADD_DEPT
+    data["departments"].append({"name": name, "emoji": "📂", "head_id": None})
+    save_data(data)
+    await update.message.reply_text(
+        f"✅ *{name}* ተጨምሯል!",
+        parse_mode="Markdown",
+        reply_markup=build_admin_keyboard(),
+    )
+    return ADMIN_MENU
+
+
+async def admin_delete_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "admin:back":
+        await query.edit_message_text(
+            "🔧 *የአስተዳዳሪ ፓናል*",
+            parse_mode="Markdown",
+            reply_markup=build_admin_keyboard(),
+        )
+        return ADMIN_MENU
+
+    name = query.data.replace("delconfirm:", "")
+    data = load_data()
+    data["departments"] = [d for d in data["departments"] if d["name"] != name]
+    save_data(data)
+    await query.edit_message_text(
+        f"✅ *{name}* ተሰርዟል!",
+        parse_mode="Markdown",
+        reply_markup=build_admin_keyboard(),
+    )
+    return ADMIN_MENU
+
+
+async def admin_set_head_dept(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "admin:back":
+        await query.edit_message_text(
+            "🔧 *የአስተዳዳሪ ፓናል*",
+            parse_mode="Markdown",
+            reply_markup=build_admin_keyboard(),
+        )
+        return ADMIN_MENU
+
+    dept_name = query.data.replace("setheaddept:", "")
+    context.user_data["setting_head_for"] = dept_name
+    await query.edit_message_text(
+        f"👤 *{dept_name}* ሃላፊ Telegram ID ይጻፉ፦\n_(ለምሳሌ: 123456789)_\n_(ለመሰረዝ /cancel)_",
+        parse_mode="Markdown",
+    )
+    return ADMIN_SET_HEAD_ID
+
+
+async def admin_set_head_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text      = update.message.text.strip()
+    dept_name = context.user_data.get("setting_head_for")
+    data      = load_data()
+
+    try:
+        head_id = int(text)
+    except ValueError:
+        await update.message.reply_text("⚠️ የተሳሳተ ID። ቁጥር ብቻ ይጻፉ፦")
+        return ADMIN_SET_HEAD_ID
+
+    for d in data["departments"]:
+        if d["name"] == dept_name:
+            d["head_id"] = head_id
+            break
+    save_data(data)
+
+    await update.message.reply_text(
+        f"✅ *{dept_name}* ሃላፊ ID `{head_id}` ተመዝግቧል!",
+        parse_mode="Markdown",
+        reply_markup=build_admin_keyboard(),
+    )
+    context.user_data.clear()
+    return ADMIN_MENU
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UTILITY HANDLERS
+# ══════════════════════════════════════════════════════════════════════════════
 
 async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
@@ -209,15 +547,6 @@ async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.clear()
-    await update.message.reply_text(
-        CANCEL_TEXT,
-        reply_markup=build_start_keyboard(),
-    )
-    return ConversationHandler.END
-
-
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "❓ ያልታወቀ ትዕዛዝ። ለመጀመር /start ይጫኑ።",
@@ -226,15 +555,16 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def unexpected_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Catch any text sent outside the conversation flow."""
     await update.message.reply_text(
         "⚠️ እባክዎ መጀመሪያ ክፍል ይምረጡ።\n"
-        "ለመጀመር � ከታች ያለውን Start ይጫኑ።",
+        "ለመጀመር 👇 ከታች ያለውን Start ይጫኑ።",
         reply_markup=build_start_keyboard(),
     )
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════════════════════
 
 async def run_bot() -> None:
     if not BOT_TOKEN:
@@ -242,7 +572,8 @@ async def run_bot() -> None:
 
     application = Application.builder().token(BOT_TOKEN).build()
 
-    conv_handler = ConversationHandler(
+    # ── User feedback conversation ──────────────────────────────────────────
+    user_conv = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
             MessageHandler(filters.Regex(r"^🕊️ ጀምር / Start$"), start),
@@ -260,7 +591,53 @@ async def run_bot() -> None:
         per_message=False,
     )
 
-    application.add_handler(conv_handler)
+    # ── Department head reply conversation ──────────────────────────────────
+    reply_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(reply_button_pressed, pattern=r"^reply:"),
+        ],
+        states={
+            HEAD_REPLY_TEXT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_reply),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+        per_message=False,
+    )
+
+    # ── Admin conversation ──────────────────────────────────────────────────
+    admin_conv = ConversationHandler(
+        entry_points=[CommandHandler("admin", admin)],
+        states={
+            ADMIN_MENU: [
+                CallbackQueryHandler(admin_menu_handler, pattern=r"^admin:"),
+                CallbackQueryHandler(admin_delete_dept,  pattern=r"^delconfirm:"),
+                CallbackQueryHandler(admin_set_head_dept, pattern=r"^setheaddept:"),
+            ],
+            ADMIN_ADD_DEPT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_add_dept),
+            ],
+            ADMIN_DELETE_DEPT: [
+                CallbackQueryHandler(admin_delete_dept,  pattern=r"^delconfirm:"),
+                CallbackQueryHandler(admin_menu_handler, pattern=r"^admin:"),
+            ],
+            ADMIN_SET_HEAD_DEPT: [
+                CallbackQueryHandler(admin_set_head_dept, pattern=r"^setheaddept:"),
+                CallbackQueryHandler(admin_menu_handler,  pattern=r"^admin:"),
+            ],
+            ADMIN_SET_HEAD_ID: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_head_id),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+        per_message=False,
+    )
+
+    application.add_handler(user_conv)
+    application.add_handler(reply_conv)
+    application.add_handler(admin_conv)
     application.add_handler(CommandHandler("chatid", chatid))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unexpected_message))
