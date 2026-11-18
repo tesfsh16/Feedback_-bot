@@ -143,11 +143,12 @@ def build_start_keyboard() -> ReplyKeyboardMarkup:
 
 def build_admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ ክፍል ጨምር",        callback_data="admin:add_dept")],
-        [InlineKeyboardButton("🗑️ ክፍል ሰርዝ",        callback_data="admin:del_dept")],
+        [InlineKeyboardButton("➕ ክፍል ጨምር",          callback_data="admin:add_dept")],
+        [InlineKeyboardButton("🗑️ ክፍል ሰርዝ",          callback_data="admin:del_dept")],
         [InlineKeyboardButton("👤 የክፍል ሃላፊ ለመቀየር",   callback_data="admin:set_head")],
-        [InlineKeyboardButton("📊 ስታቲስቲክስ",         callback_data="admin:stats")],
-        [InlineKeyboardButton("❌ ዝጋ",              callback_data="admin:close")],
+        [InlineKeyboardButton("📊 ስታቲስቲክስ",           callback_data="admin:stats")],
+        [InlineKeyboardButton("📋 ሪፖርት",              callback_data="admin:report")],
+        [InlineKeyboardButton("❌ ዝጋ",                callback_data="admin:close")],
     ])
 
 
@@ -278,10 +279,14 @@ async def receive_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     main_office_id = get_main_office_head_id(data)
     if main_office_id and (not dept_obj or dept_obj.get("head_id") != main_office_id):
         try:
+            office_keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📋 ሪፖርት ይመልከቱ", callback_data="mainoffice:report")
+            ]])
             await context.bot.send_message(
                 chat_id=main_office_id,
                 text=head_msg,
                 parse_mode="Markdown",
+                reply_markup=office_keyboard,
             )
         except Exception as e:
             logger.error(f"Failed to notify main office: {e}")
@@ -425,6 +430,10 @@ async def admin_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode="Markdown",
             reply_markup=build_admin_keyboard(),
         )
+        return ADMIN_MENU
+
+    elif action == "report":
+        await admin_menu_handler_report(query, data)
         return ADMIN_MENU
 
     elif action == "add_dept":
@@ -591,6 +600,21 @@ async def admin_set_head_id(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 # UTILITY HANDLERS
 # ══════════════════════════════════════════════════════════════════════════════
 
+async def main_office_report_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the 📋 ሪፖርት ይመልከቱ button for ዋናው ጽ/ቤት head."""
+    query   = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    data    = load_data()
+    main_office_id = get_main_office_head_id(data)
+
+    if not (is_admin(user_id) or user_id == main_office_id):
+        await query.answer("⛔ ፈቃድ የለዎትም።", show_alert=True)
+        return
+
+    await send_report(query.message, data)
+
+
 async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     await update.message.reply_text(
@@ -611,12 +635,25 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("⛔ ይህን ትዕዛዝ የመጠቀም ፈቃድ የለዎትም።")
         return
 
+    await send_report(update.message, data)
+
+
+async def admin_menu_handler_report(query, data: dict) -> None:
+    """Send report as a new message when admin taps the 📋 Report button."""
     comments = data.get("comments", {})
     if not comments:
-        await update.message.reply_text("📊 ገና አስተያየት አልደረሰም።")
+        await query.message.reply_text("📊 ገና አስተያየት አልደረሰም።")
+        return
+    await send_report(query.message, data)
+
+
+async def send_report(message, data: dict) -> None:    """Build and send the formatted report."""
+    comments = data.get("comments", {})
+    if not comments:
+        await message.reply_text("📊 ገና አስተያየት አልደረሰም።")
         return
 
-    # Build per-department stats
+    # Aggregate per-department stats
     dept_stats: dict = {}
     for cid, c in comments.items():
         d = c["department"]
@@ -626,36 +663,50 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if c["answered"]:
             dept_stats[d]["answered"] += 1
         else:
-            dept_stats[d]["unanswered"].append((cid, c["text"][:60]))
+            dept_stats[d]["unanswered"].append((cid, c["text"][:40]))
 
     total_all    = sum(v["total"]    for v in dept_stats.values())
     answered_all = sum(v["answered"] for v in dept_stats.values())
+    pending_all  = total_all - answered_all
 
-    lines = [f"📊 *ሙሉ ሪፖርት*\n━━━━━━━━━━━━━━━━━━━"]
+    # Column widths
+    col1 = 22   # department name
+    col2 = 7    # total
+    col3 = 7    # answered
+    col4 = 7    # unanswered
+
+    header  = f"{'ክፍል':<{col1}} {'ጠቅላላ':>{col2}} {'✅':>{col3}} {'⏳':>{col4}}"
+    divider = "─" * (col1 + col2 + col3 + col4 + 3)
+
+    rows = [header, divider]
     for dept, s in dept_stats.items():
-        unanswered_count = len(s["unanswered"])
-        lines.append(
-            f"\n📂 *{dept}*\n"
-            f"   ጠቅላላ: {s['total']} | ✅ {s['answered']} | ⏳ {unanswered_count}"
+        name = dept[:col1]
+        rows.append(
+            f"{name:<{col1}} {s['total']:>{col2}} {s['answered']:>{col3}} {len(s['unanswered']):>{col4}}"
         )
+
+    rows.append(divider)
+    rows.append(
+        f"{'ጠቅላላ':<{col1}} {total_all:>{col2}} {answered_all:>{col3}} {pending_all:>{col4}}"
+    )
+
+    table = "```\n" + "\n".join(rows) + "\n```"
+
+    # Unanswered previews
+    unanswered_lines = []
+    for dept, s in dept_stats.items():
         if s["unanswered"]:
-            lines.append("   _ያልተመለሱ:_")
-            for cid, preview in s["unanswered"][:5]:  # show max 5 per dept
-                lines.append(f"   • `#{cid}`: {preview}…")
-            if unanswered_count > 5:
-                lines.append(f"   _...እና {unanswered_count - 5} ተጨማሪ_")
+            unanswered_lines.append(f"\n*{dept}* — ያልተመለሱ:")
+            for cid, preview in s["unanswered"][:3]:
+                unanswered_lines.append(f"  • `#{cid}`: {preview}…")
+            if len(s["unanswered"]) > 3:
+                unanswered_lines.append(f"  _...እና {len(s['unanswered']) - 3} ተጨማሪ_")
 
-    lines.append(f"\n━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"🔢 ጠቅላላ: {total_all} | ✅ {answered_all} | ⏳ {total_all - answered_all}")
+    full_text = f"� *ሪፖርት*\n{table}"
+    if unanswered_lines:
+        full_text += "\n\n⏳ *ያልተመለሱ አስተያየቶች:*\n" + "\n".join(unanswered_lines)
 
-    # Send in chunks if too long
-    full_text = "\n".join(lines)
-    if len(full_text) > 4000:
-        chunks = [full_text[i:i+4000] for i in range(0, len(full_text), 4000)]
-        for chunk in chunks:
-            await update.message.reply_text(chunk, parse_mode="Markdown")
-    else:
-        await update.message.reply_text(full_text, parse_mode="Markdown")
+    await message.reply_text(full_text, parse_mode="Markdown")
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -752,6 +803,7 @@ async def run_bot() -> None:
     application.add_handler(user_conv)
     application.add_handler(reply_conv)
     application.add_handler(admin_conv)
+    application.add_handler(CallbackQueryHandler(main_office_report_button, pattern=r"^mainoffice:report$"))
     application.add_handler(CommandHandler("chatid", chatid))
     application.add_handler(CommandHandler("report", report))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
