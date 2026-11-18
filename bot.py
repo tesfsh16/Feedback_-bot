@@ -647,7 +647,8 @@ async def admin_menu_handler_report(query, data: dict) -> None:
     await send_report(query.message, data)
 
 
-async def send_report(message, data: dict) -> None:    """Build and send the formatted report."""
+async def send_report(message, data: dict) -> None:
+    """Build and send the formatted report."""
     comments = data.get("comments", {})
     if not comments:
         await message.reply_text("📊 ገና አስተያየት አልደረሰም።")
