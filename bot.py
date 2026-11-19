@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -684,15 +685,13 @@ async def send_report(message, data: dict) -> None:
     lines.append(f"✅ ምላሽ የተሰጠ    : {answered_all}")
     lines.append(f"⏳ ምላሽ ያልተሰጠ   : {pending_all}")
 
-    # Build one Detail button per department
-    import base64
+    # Build one Detail button per department using list index (safe, short callback_data)
     buttons = []
-    for dept in dept_stats.keys():
-        # Encode dept name safely for callback_data (max 64 bytes)
-        encoded = base64.urlsafe_b64encode(dept.encode()).decode()
+    all_depts_with_comments = list(dept_stats.keys())
+    for i, dept in enumerate(all_depts_with_comments):
         buttons.append([InlineKeyboardButton(
             f"🔍 {dept} — ዝርዝር",
-            callback_data=f"deptdetail:{encoded}"
+            callback_data=f"deptdetail:{i}"
         )])
 
     await message.reply_text(
@@ -704,7 +703,6 @@ async def send_report(message, data: dict) -> None:
 
 async def dept_detail_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show all comments for a department when Detail button is tapped."""
-    import base64
     query   = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
@@ -715,10 +713,22 @@ async def dept_detail_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.answer("⛔ ፈቃድ የለዎትም።", show_alert=True)
         return
 
-    encoded = query.data.replace("deptdetail:", "")
-    dept    = base64.urlsafe_b64decode(encoded.encode()).decode()
-
+    # Get department name by index from comments
+    index    = int(query.data.replace("deptdetail:", ""))
     comments = data.get("comments", {})
+
+    # Rebuild the same ordered dept list as send_report uses
+    dept_order = []
+    for c in comments.values():
+        d = c["department"]
+        if d not in dept_order:
+            dept_order.append(d)
+
+    if index >= len(dept_order):
+        await query.message.reply_text("⚠️ ክፍሉ አልተገኘም።")
+        return
+
+    dept = dept_order[index]
     dept_comments = {
         cid: c for cid, c in comments.items()
         if c["department"] == dept
@@ -728,10 +738,10 @@ async def dept_detail_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.message.reply_text(f"📂 *{dept}*\n\nምንም አስተያየት የለም።", parse_mode="Markdown")
         return
 
-    lines = [f"📂 *{dept} — ዝርዝር ሪፖርት*", ""]
-
     answered_list   = [(cid, c) for cid, c in dept_comments.items() if c["answered"]]
     unanswered_list = [(cid, c) for cid, c in dept_comments.items() if not c["answered"]]
+
+    lines = [f"📂 *{dept} — ዝርዝር ሪፖርት*", ""]
 
     if unanswered_list:
         lines.append(f"⏳ *ምላሽ ያልተሰጣቸው ({len(unanswered_list)})*")
