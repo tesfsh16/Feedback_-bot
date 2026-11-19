@@ -648,7 +648,7 @@ async def admin_menu_handler_report(query, data: dict) -> None:
 
 
 async def send_report(message, data: dict) -> None:
-    """Build and send a clean simple report."""
+    """Build and send a clean simple report with detail buttons per department."""
     comments = data.get("comments", {})
     if not comments:
         await message.reply_text("📊 ገና አስተያየት አልደረሰም።")
@@ -672,11 +672,7 @@ async def send_report(message, data: dict) -> None:
 
     for dept, s in dept_stats.items():
         pending = s["total"] - s["answered"]
-        if pending == 0:
-            status = "✅ ሁሉም ተመልሷል"
-        else:
-            status = f"⏳ {pending} ያልተመለሰ አለ"
-
+        status  = "✅ ሁሉም ተመልሷል" if pending == 0 else f"⏳ {pending} ያልተመለሰ አለ"
         lines.append(f"📂 *{dept}*")
         lines.append(f"    ጠቅላላ አስተያየት ➜ {s['total']}")
         lines.append(f"    ምላሽ የተሰጠ   ➜ {s['answered']}")
@@ -688,7 +684,81 @@ async def send_report(message, data: dict) -> None:
     lines.append(f"✅ ምላሽ የተሰጠ    : {answered_all}")
     lines.append(f"⏳ ምላሽ ያልተሰጠ   : {pending_all}")
 
-    await message.reply_text("\n".join(lines), parse_mode="Markdown")
+    # Build one Detail button per department
+    import base64
+    buttons = []
+    for dept in dept_stats.keys():
+        # Encode dept name safely for callback_data (max 64 bytes)
+        encoded = base64.urlsafe_b64encode(dept.encode()).decode()
+        buttons.append([InlineKeyboardButton(
+            f"🔍 {dept} — ዝርዝር",
+            callback_data=f"deptdetail:{encoded}"
+        )])
+
+    await message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def dept_detail_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show all comments for a department when Detail button is tapped."""
+    import base64
+    query   = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    data    = load_data()
+    main_office_id = get_main_office_head_id(data)
+
+    if not (is_admin(user_id) or user_id == main_office_id):
+        await query.answer("⛔ ፈቃድ የለዎትም።", show_alert=True)
+        return
+
+    encoded = query.data.replace("deptdetail:", "")
+    dept    = base64.urlsafe_b64decode(encoded.encode()).decode()
+
+    comments = data.get("comments", {})
+    dept_comments = {
+        cid: c for cid, c in comments.items()
+        if c["department"] == dept
+    }
+
+    if not dept_comments:
+        await query.message.reply_text(f"📂 *{dept}*\n\nምንም አስተያየት የለም።", parse_mode="Markdown")
+        return
+
+    lines = [f"📂 *{dept} — ዝርዝር ሪፖርት*", ""]
+
+    answered_list   = [(cid, c) for cid, c in dept_comments.items() if c["answered"]]
+    unanswered_list = [(cid, c) for cid, c in dept_comments.items() if not c["answered"]]
+
+    if unanswered_list:
+        lines.append(f"⏳ *ምላሽ ያልተሰጣቸው ({len(unanswered_list)})*")
+        lines.append("─────────────────────")
+        for cid, c in unanswered_list:
+            lines.append(f"🔹 `#{cid}`")
+            lines.append(f"    💬 {c['text']}")
+            lines.append("")
+
+    if answered_list:
+        lines.append(f"✅ *ምላሽ የተሰጣቸው ({len(answered_list)})*")
+        lines.append("─────────────────────")
+        for cid, c in answered_list:
+            lines.append(f"🔸 `#{cid}`")
+            lines.append(f"    💬 {c['text']}")
+            lines.append(f"    ↩️ ምላሽ: {c['reply']}")
+            lines.append("")
+
+    full_text = "\n".join(lines)
+
+    # Send in chunks if too long (Telegram max 4096 chars)
+    if len(full_text) > 4000:
+        chunks = [full_text[i:i+4000] for i in range(0, len(full_text), 4000)]
+        for chunk in chunks:
+            await query.message.reply_text(chunk, parse_mode="Markdown")
+    else:
+        await query.message.reply_text(full_text, parse_mode="Markdown")
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -786,6 +856,7 @@ async def run_bot() -> None:
     application.add_handler(reply_conv)
     application.add_handler(admin_conv)
     application.add_handler(CallbackQueryHandler(main_office_report_button, pattern=r"^mainoffice:report$"))
+    application.add_handler(CallbackQueryHandler(dept_detail_handler, pattern=r"^deptdetail:"))
     application.add_handler(CommandHandler("chatid", chatid))
     application.add_handler(CommandHandler("report", report))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
